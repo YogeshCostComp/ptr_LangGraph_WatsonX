@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = 'https://ptr-langgraph-watsonx-api.onrender.com'
 
 function App() {
   const [messages, setMessages] = useState([
