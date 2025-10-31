@@ -15,5 +15,5 @@ services:
   - type: web
     name: ptr-langgraph-watsonx-ui
     env: static
-    buildCommand: chmod +x build-ui.sh && ./build-ui.sh
+    buildCommand: cd chat-ui-react && npm ci && NODE_ENV=production ./node_modules/.bin/vite build
     staticPublishPath: ./chat-ui-react/dist
