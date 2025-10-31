@@ -257,6 +257,202 @@ async def stream_agent(request: AgentRequest):
     }
 
 
+class WatsonXToolRequest(BaseModel):
+    """Request model for watsonx tool integration."""
+    input: str = Field(..., description="The user's query or question", example="What is the weather in San Francisco?")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "input": "What is the current weather in San Francisco?"
+            }
+        }
+
+
+class WatsonXToolResponse(BaseModel):
+    """Response model for watsonx tool integration."""
+    output: str = Field(..., description="The agent's response to the query")
+    success: bool = Field(default=True, description="Whether the request was successful")
+    metadata: Optional[dict] = Field(default=None, description="Additional metadata about the response")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "output": "According to current weather data, San Francisco is experiencing partly cloudy conditions with a temperature of 65°F (18°C).",
+                "success": True,
+                "metadata": {
+                    "timestamp": "2025-10-31T12:00:00Z",
+                    "tools_used": ["tavily_search"],
+                    "model": "claude-sonnet-4-20250514"
+                }
+            }
+        }
+
+
+@app.post("/watsonx/tool", response_model=WatsonXToolResponse, 
+          summary="watsonx Tool Endpoint",
+          description="Endpoint designed for IBM watsonx Orchestrate tool integration. Accepts a user query and returns an AI-generated response using web search capabilities.")
+async def watsonx_tool(request: WatsonXToolRequest):
+    """watsonx Orchestrate compatible tool endpoint.
+    
+    This endpoint is specifically designed for integration with IBM watsonx Orchestrate.
+    It accepts a simple text input and returns a formatted response.
+    
+    **Input JSON Schema:**
+    ```json
+    {
+        "input": "Your question here"
+    }
+    ```
+    
+    **Output JSON Schema:**
+    ```json
+    {
+        "output": "AI response here",
+        "success": true,
+        "metadata": {
+            "timestamp": "ISO timestamp",
+            "tools_used": ["list of tools"],
+            "model": "model name"
+        }
+    }
+    ```
+    
+    **Example Usage:**
+    ```bash
+    curl -X POST "https://ptr-langgraph-watsonx-api.onrender.com/watsonx/tool" \\
+         -H "Content-Type: application/json" \\
+         -d '{"input": "What is the weather in San Francisco?"}'
+    ```
+    """
+    try:
+        from langchain_core.messages import HumanMessage
+        
+        # Create context
+        context = Context(
+            model="anthropic/claude-sonnet-4-20250514",
+            max_search_results=10
+        )
+        
+        # Prepare input state
+        input_state = {
+            "messages": [HumanMessage(content=request.input)]
+        }
+        
+        # Invoke the graph with context parameter
+        result = await graph.ainvoke(input_state, context=context)
+        
+        # Extract the final response
+        final_messages = result.get("messages", [])
+        if not final_messages:
+            return WatsonXToolResponse(
+                output="I apologize, but I encountered an issue processing your request.",
+                success=False,
+                metadata={"error": "No response from agent"}
+            )
+        
+        # Get the last assistant message
+        last_message = final_messages[-1]
+        response_content = ""
+        
+        if hasattr(last_message, 'content'):
+            response_content = last_message.content
+        elif isinstance(last_message, dict):
+            response_content = last_message.get('content', '')
+        
+        # Detect which tools were used
+        tools_used = []
+        for msg in final_messages:
+            if hasattr(msg, 'additional_kwargs') and 'tool_calls' in msg.additional_kwargs:
+                for tool_call in msg.additional_kwargs['tool_calls']:
+                    tool_name = tool_call.get('function', {}).get('name', 'unknown')
+                    if tool_name not in tools_used:
+                        tools_used.append(tool_name)
+        
+        return WatsonXToolResponse(
+            output=response_content,
+            success=True,
+            metadata={
+                "timestamp": datetime.utcnow().isoformat(),
+                "tools_used": tools_used if tools_used else ["direct_response"],
+                "model": "claude-sonnet-4-20250514",
+                "message_count": len(final_messages)
+            }
+        )
+        
+    except Exception as e:
+        import traceback
+        error_detail = f"Error: {str(e)}"
+        print(f"watsonx tool error: {error_detail}\n{traceback.format_exc()}")
+        
+        return WatsonXToolResponse(
+            output=f"I apologize, but I encountered an error processing your request: {str(e)}",
+            success=False,
+            metadata={"error": error_detail, "timestamp": datetime.utcnow().isoformat()}
+        )
+
+
+@app.get("/watsonx/schema")
+async def watsonx_schema():
+    """Get the JSON schema for the watsonx tool endpoint.
+    
+    This endpoint returns the OpenAPI schema information that can be used
+    to configure the tool in watsonx Orchestrate.
+    """
+    return {
+        "tool_name": "ptr-langgraph-watsonx",
+        "description": "A LangGraph ReAct agent powered by Claude Sonnet that can search the web using Tavily and provide intelligent responses to user queries.",
+        "endpoint": "/watsonx/tool",
+        "method": "POST",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string",
+                    "description": "The user's query or question",
+                    "example": "What is the current weather in San Francisco?"
+                }
+            },
+            "required": ["input"]
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "output": {
+                    "type": "string",
+                    "description": "The agent's response to the query"
+                },
+                "success": {
+                    "type": "boolean",
+                    "description": "Whether the request was successful"
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Additional metadata about the response",
+                    "properties": {
+                        "timestamp": {"type": "string"},
+                        "tools_used": {"type": "array", "items": {"type": "string"}},
+                        "model": {"type": "string"}
+                    }
+                }
+            },
+            "required": ["output", "success"]
+        },
+        "example_request": {
+            "input": "What is the weather in San Francisco?"
+        },
+        "example_response": {
+            "output": "According to current weather data, San Francisco is experiencing partly cloudy conditions with a temperature of 65°F (18°C).",
+            "success": True,
+            "metadata": {
+                "timestamp": "2025-10-31T12:00:00Z",
+                "tools_used": ["tavily_search"],
+                "model": "claude-sonnet-4-20250514"
+            }
+        }
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
