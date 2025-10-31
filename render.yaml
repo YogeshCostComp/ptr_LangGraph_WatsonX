@@ -1,0 +1,19 @@
+services:
+  # API Service (already deployed)
+  - type: web
+    name: ptr-langgraph-watsonx-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+
+  # React UI Static Site
+  - type: web
+    name: ptr-langgraph-watsonx-ui
+    env: static
+    buildCommand: cd chat-ui-react && npm install && npm run build
+    staticPublishPath: ./chat-ui-react/dist
