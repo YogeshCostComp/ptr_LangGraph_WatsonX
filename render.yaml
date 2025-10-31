@@ -15,5 +15,5 @@ services:
   - type: web
     name: ptr-langgraph-watsonx-ui
     env: static
-    buildCommand: cd chat-ui-react && npm install && npm run build
+    buildCommand: npm install --prefix chat-ui-react && npm run build --prefix chat-ui-react
     staticPublishPath: ./chat-ui-react/dist
