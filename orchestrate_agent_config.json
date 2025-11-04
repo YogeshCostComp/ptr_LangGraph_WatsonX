@@ -1,0 +1,43 @@
+{
+  "spec_version": "v1",
+  "kind": "external",
+  "name": "langgraph_watsonx_agent",
+  "title": "LangGraph watsonx Agent",
+  "nickname": "langgraph_agent",
+  "provider": "external_chat",
+  "description": "A powerful LangGraph-based agent integrated with watsonx.ai for advanced reasoning, research, and problem-solving tasks. This agent leverages IBM watsonx models and governance monitoring.",
+  "tags": ["AI", "Research", "watsonx", "LangGraph", "Problem Solving"],
+  "publisher": "Capgemini",
+  "language_support": ["English"],
+  "category": "agent",
+  "llm": "ibm/granite-13b-chat-v2",
+  "api_url": "https://ptr-langgraph-watsonx-api.onrender.com/v1/chat/completions",
+  "auth_scheme": "API_KEY",
+  "auth_config": {
+    "header_name": "x-api-key",
+    "api_key": "${ORCHESTRATE_API_KEY}"
+  },
+  "chat_params": {
+    "stream": true
+  },
+  "config": {
+    "hidden": false,
+    "enable_cot": true
+  },
+  "related_links": [
+    {
+      "key": "documentation",
+      "value": "https://github.com/Capgemini-Innersource/ptr_LangGraph_WatsonX",
+      "type": "hyperlink"
+    },
+    {
+      "key": "support",
+      "value": "https://github.com/Capgemini-Innersource/ptr_LangGraph_WatsonX/issues",
+      "type": "hyperlink"
+    }
+  ],
+  "style": "default",
+  "delete_by": null,
+  "agent_role": "collaborator",
+  "channels": []
+}

@@ -1,17 +1,19 @@
-"""FastAPI wrapper for the LangGraph ReAct Agent.
+"""FastAPI wrapper for the LangGraph ReAct Agent with watsonx.governance monitoring.
 
 This module provides REST API endpoints to interact with the agent,
 including a chat completion endpoint compatible with watsonx Orchestrate.
-Includes watsonx.governance monitoring for runtime evaluation.
+Includes full watsonx.governance monitoring, evaluation, and experiment tracking.
 """
 
 import uuid
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, AsyncGenerator
 import json
+import asyncio
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -23,82 +25,80 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from react_agent.context import Context
 from react_agent.graph import graph
 
-# watsonx.governance monitoring (optional - only if credentials provided)
-WATSONX_MONITORING_ENABLED = False
+# watsonx.governance imports and setup
+WATSONX_GOV_ENABLED = False
 try:
-    import requests
-    WATSONX_API_KEY = os.getenv("WATSONX_API_KEY")
-    WATSONX_SPACE_ID = os.getenv("WATSONX_SPACE_ID", "cce0d392-58a9-c931-9027-ca2afe9a2317")
+    from ibm_watsonx_gov.config import AgenticAIConfiguration
+    from ibm_watsonx_gov.config.agentic_ai_configuration import TracingConfiguration
+    from ibm_watsonx_gov.evaluators.agentic_evaluator import AgenticEvaluator
+    from ibm_watsonx_gov.entities.agentic_app import (AgenticApp, MetricsConfiguration)
+    from ibm_watsonx_gov.metrics import AnswerRelevanceMetric
+    from ibm_watsonx_gov.entities.enums import MetricGroup
+    from ibm_watsonx_gov.entities.ai_experiment import AIExperimentRunRequest
+
+    # Environment variables for watsonx.governance
+    WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID")
+    WATSONX_APIKEY = os.getenv("WATSONX_APIKEY", os.getenv("WATSONX_API_KEY"))
     WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
-    
-    if WATSONX_API_KEY:
-        WATSONX_MONITORING_ENABLED = True
-        print(f"✓ watsonx.governance monitoring ENABLED (Space: {WATSONX_SPACE_ID})")
+
+    if WATSONX_PROJECT_ID and WATSONX_APIKEY:
+        WATSONX_GOV_ENABLED = True
+        print("✓ watsonx.governance FULL monitoring ENABLED")
+
+        # Set up the agentic evaluator
+        agentic_app = AgenticApp(
+            name="LangGraph Anthropic Agent",
+            metrics_configuration=MetricsConfiguration(
+                metrics=[AnswerRelevanceMetric()],
+                metric_groups=[MetricGroup.CONTENT_SAFETY]
+            )
+        )
+
+        evaluator = AgenticEvaluator(
+            agentic_app=agentic_app,
+            tracing_configuration=TracingConfiguration(project_id=WATSONX_PROJECT_ID)
+        )
+
+        # Track experiment for API monitoring
+        experiment_id = evaluator.track_experiment(
+            name="LangGraph API Production Monitoring",
+            use_existing=True
+        )
+        print(f"✓ Experiment tracking enabled: {experiment_id}")
+
     else:
-        print("ℹ watsonx.governance monitoring DISABLED (no API key)")
-except ImportError:
-    print("ℹ watsonx.governance monitoring DISABLED (requests not installed)")
+        print("ℹ watsonx.governance DISABLED (missing WATSONX_PROJECT_ID or WATSONX_APIKEY)")
+        evaluator = None
+
+except ImportError as e:
+    print(f"ℹ watsonx.governance SDK not available: {e}")
+    evaluator = None
+    WATSONX_GOV_ENABLED = False
 
 
 def log_to_watsonx(prompt: str, response: str, metadata: dict):
-    """Log transaction to watsonx.governance for monitoring."""
-    if not WATSONX_MONITORING_ENABLED:
+    """Legacy function - now using watsonx.governance SDK for monitoring."""
+    if not WATSONX_GOV_ENABLED:
         return
-    
+
     try:
-        # Get IAM token for watsonx API
-        token_url = "https://iam.cloud.ibm.com/identity/token"
-        token_headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        token_data = {
-            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
-            "apikey": WATSONX_API_KEY
-        }
-        
-        token_response = requests.post(token_url, headers=token_headers, data=token_data, timeout=10)
-        token_response.raise_for_status()
-        access_token = token_response.json()["access_token"]
-        
-        # Create payload logging record for watsonx.governance
-        payload = {
-            "input_data": [{
-                "fields": ["input"],
-                "values": [[prompt]]
-            }],
-            "output_data": [{
-                "fields": ["output"], 
-                "values": [[response]]
-            }],
-            "metadata": {
-                "transaction_id": metadata.get("transaction_id", str(uuid.uuid4())),
-                "timestamp": datetime.utcnow().isoformat(),
-                "model_name": "ptr-langgraph-agent",
-                "deployment_name": "ptr-langgraph-production",
-                **metadata
-            }
-        }
-        
-        # Send to watsonx payload logging endpoint
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        # Use the correct watsonx payload logging endpoint
-        url = f"{WATSONX_URL}/ml/v4/deployments/payload_logging"
-        params = {
-            "space_id": WATSONX_SPACE_ID,
-            "version": "2024-10-01"
-        }
-        
-        response_obj = requests.post(url, headers=headers, params=params, json=payload, timeout=10)
-        
-        if response_obj.status_code in [200, 201]:
-            print(f"✓ Logged to watsonx: {metadata.get('transaction_id', 'unknown')}")
-        else:
-            print(f"⚠ watsonx logging failed: {response_obj.status_code} - {response_obj.text}")
-            
+        # Start experiment run for this API call
+        run_request = AIExperimentRunRequest(
+            name=f"api-call-{uuid.uuid4().hex[:8]}",
+            custom_tags=[
+                {"key": "endpoint", "value": "/watsonx/tool"},
+                {"key": "model", "value": "claude-sonnet-4-20250514"},
+                {"key": "transaction_id", "value": metadata.get("transaction_id", "")}
+            ]
+        )
+
+        evaluator.start_run(run_request)
+
+        # The actual evaluation happens in the decorated functions
+        # This just ensures the run is tracked
+
     except Exception as e:
-        print(f"⚠ watsonx logging error: {str(e)}")
+        print(f"⚠ watsonx governance logging error: {str(e)}")
 
 
 # Pydantic models for API requests and responses
@@ -115,6 +115,15 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=1024, description="Maximum tokens in response")
     temperature: Optional[float] = Field(default=0.7, description="Sampling temperature")
     stream: Optional[bool] = Field(default=False, description="Whether to stream the response")
+
+
+class ChatCompletionChunk(BaseModel):
+    """Streaming chunk model for SSE responses."""
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[dict]
 
 
 class ChatCompletionResponse(BaseModel):
@@ -163,6 +172,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security configuration for Orchestrate
+ORCHESTRATE_API_KEY = os.getenv("ORCHESTRATE_API_KEY", "")
+
+def verify_orchestrate_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
+    """Verify the x-api-key header for Orchestrate endpoints"""
+    if not ORCHESTRATE_API_KEY:
+        # If no key is configured, allow access (for backward compatibility)
+        return True
+    
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing x-api-key header")
+    
+    if x_api_key != ORCHESTRATE_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    return True
+
 
 @app.get("/", response_model=HealthResponse)
 async def root():
@@ -185,12 +211,137 @@ async def health_check():
 
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(
+    request: ChatCompletionRequest,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key")
+):
     """Chat completion endpoint compatible with watsonx Orchestrate and OpenAI API format.
     
     This endpoint accepts chat messages and returns agent responses in a format
     compatible with standard chat completion APIs.
+    
+    Supports both streaming (SSE) and non-streaming responses:
+    - stream=false: Returns complete response immediately
+    - stream=true: Returns Server-Sent Events stream for real-time responses
+    
+    Authentication: Optional x-api-key header (required if ORCHESTRATE_API_KEY is set)
     """
+    # Verify API key if configured
+    if ORCHESTRATE_API_KEY:
+        verify_orchestrate_api_key(x_api_key)
+    
+    # Handle streaming requests
+    if request.stream:
+        async def generate_sse_stream() -> AsyncGenerator[str, None]:
+            """Generate SSE stream for chat completion"""
+            completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+            created_at = int(datetime.utcnow().timestamp())
+            
+            try:
+                # Convert request messages to LangChain format
+                from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+                
+                langchain_messages = []
+                for msg in request.messages:
+                    if msg.role == "user":
+                        langchain_messages.append(HumanMessage(content=msg.content))
+                    elif msg.role == "assistant":
+                        langchain_messages.append(AIMessage(content=msg.content))
+                    elif msg.role == "system":
+                        langchain_messages.append(SystemMessage(content=msg.content))
+                
+                # Prepare input state
+                input_state = {
+                    "messages": langchain_messages
+                }
+                
+                # Create context
+                context = Context(
+                    model=request.model or "anthropic/claude-sonnet-4-20250514",
+                    max_search_results=10
+                )
+                
+                # Send initial chunk with role
+                initial_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_at,
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(initial_chunk)}\n\n"
+                
+                # Invoke the graph with context parameter
+                result = await graph.ainvoke(input_state, context=context)
+                
+                # Extract the final response
+                final_messages = result.get("messages", [])
+                if final_messages:
+                    last_message = final_messages[-1]
+                    response_content = ""
+                    
+                    if hasattr(last_message, 'content'):
+                        response_content = last_message.content
+                    elif isinstance(last_message, dict):
+                        response_content = last_message.get('content', '')
+                    
+                    # Stream response word by word
+                    words = response_content.split()
+                    for word in words:
+                        chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_at,
+                            "model": request.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": word + " "},
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        await asyncio.sleep(0.05)  # Simulate realistic streaming
+                
+                # Send final chunk
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_at,
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }]
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+                
+            except Exception as e:
+                error_chunk = {
+                    "error": {
+                        "message": str(e),
+                        "type": "internal_error",
+                        "code": 500
+                    }
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+        
+        return StreamingResponse(
+            generate_sse_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+    
+    # Non-streaming response (original implementation)
     try:
         # Convert request messages to LangChain format
         from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -499,6 +650,20 @@ async def watsonx_tool(request: WatsonXToolRequest):
             success=False,
             metadata={"error": error_detail, "timestamp": datetime.utcnow().isoformat(), "transaction_id": transaction_id}
         )
+
+
+# watsonx governance evaluation configuration for the API endpoint
+if WATSONX_GOV_ENABLED:
+    answer_quality_config_api = {
+        "input_fields": ["input"],
+        "context_fields": ["tools_used"],
+        "output_fields": ["output"]
+    }
+    
+    # Decorate the function with watsonx governance evaluator
+    watsonx_tool = evaluator.evaluate_faithfulness(
+        configuration=AgenticAIConfiguration(**answer_quality_config_api)
+    )(watsonx_tool)
 
 
 @app.get("/watsonx/schema")
