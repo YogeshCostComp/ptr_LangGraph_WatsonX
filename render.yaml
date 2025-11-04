@@ -16,6 +16,8 @@ services:
         value: cce0d392-58a9-c931-9027-ca2afe9a2317
       - key: WATSONX_URL
         value: https://us-south.ml.cloud.ibm.com
+      - key: ORCHESTRATE_API_KEY
+        value: R_vC74hSoNSBTlbLZvBe6taNnmMh_QyzCBwt83L5QKM
 
   # React UI Static Site
   - type: web
