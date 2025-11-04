@@ -10,6 +10,12 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
+      - key: WATSONX_API_KEY
+        sync: false
+      - key: WATSONX_SPACE_ID
+        value: cce0d392-58a9-c931-9027-ca2afe9a2317
+      - key: WATSONX_URL
+        value: https://us-south.ml.cloud.ibm.com
 
   # React UI Static Site
   - type: web

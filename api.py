@@ -28,7 +28,7 @@ WATSONX_MONITORING_ENABLED = False
 try:
     import requests
     WATSONX_API_KEY = os.getenv("WATSONX_API_KEY")
-    WATSONX_SPACE_ID = os.getenv("WATSONX_SPACE_ID", "10bd47d7-d7d3-4b9d-baf4-909ea08875f4")
+    WATSONX_SPACE_ID = os.getenv("WATSONX_SPACE_ID", "cce0d392-58a9-c931-9027-ca2afe9a2317")
     WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
     
     if WATSONX_API_KEY:
@@ -46,40 +46,56 @@ def log_to_watsonx(prompt: str, response: str, metadata: dict):
         return
     
     try:
-        # Create payload logging record
+        # Get IAM token for watsonx API
+        token_url = "https://iam.cloud.ibm.com/identity/token"
+        token_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        token_data = {
+            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": WATSONX_API_KEY
+        }
+        
+        token_response = requests.post(token_url, headers=token_headers, data=token_data, timeout=10)
+        token_response.raise_for_status()
+        access_token = token_response.json()["access_token"]
+        
+        # Create payload logging record for watsonx.governance
         payload = {
             "input_data": [{
                 "fields": ["input"],
                 "values": [[prompt]]
             }],
             "output_data": [{
-                "fields": ["output"],
+                "fields": ["output"], 
                 "values": [[response]]
             }],
             "metadata": {
-                "transaction_id": str(uuid.uuid4()),
+                "transaction_id": metadata.get("transaction_id", str(uuid.uuid4())),
                 "timestamp": datetime.utcnow().isoformat(),
                 "model_name": "ptr-langgraph-agent",
-                "deployment_id": "ptr-langgraph-production",
+                "deployment_name": "ptr-langgraph-production",
                 **metadata
             }
         }
         
-        # Send to watsonx monitoring endpoint
+        # Send to watsonx payload logging endpoint
         headers = {
-            "Authorization": f"Bearer {WATSONX_API_KEY}",
+            "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json"
         }
         
-        url = f"{WATSONX_URL}/ml/v4/deployment_jobs/payload_logging"
-        params = {"space_id": WATSONX_SPACE_ID}
+        # Use the correct watsonx payload logging endpoint
+        url = f"{WATSONX_URL}/ml/v4/deployments/payload_logging"
+        params = {
+            "space_id": WATSONX_SPACE_ID,
+            "version": "2024-10-01"
+        }
         
-        response_obj = requests.post(url, headers=headers, params=params, json=payload, timeout=5)
+        response_obj = requests.post(url, headers=headers, params=params, json=payload, timeout=10)
         
-        if response_obj.status_code == 201:
+        if response_obj.status_code in [200, 201]:
             print(f"✓ Logged to watsonx: {metadata.get('transaction_id', 'unknown')}")
         else:
-            print(f"⚠ watsonx logging failed: {response_obj.status_code}")
+            print(f"⚠ watsonx logging failed: {response_obj.status_code} - {response_obj.text}")
             
     except Exception as e:
         print(f"⚠ watsonx logging error: {str(e)}")
@@ -482,102 +498,6 @@ async def watsonx_tool(request: WatsonXToolRequest):
             output=f"I apologize, but I encountered an error processing your request: {str(e)}",
             success=False,
             metadata={"error": error_detail, "timestamp": datetime.utcnow().isoformat(), "transaction_id": transaction_id}
-        )
-    
-    This endpoint is specifically designed for integration with IBM watsonx Orchestrate.
-    It accepts a simple text input and returns a formatted response.
-    
-    **Input JSON Schema:**
-    ```json
-    {
-        "input": "Your question here"
-    }
-    ```
-    
-    **Output JSON Schema:**
-    ```json
-    {
-        "output": "AI response here",
-        "success": true,
-        "metadata": {
-            "timestamp": "ISO timestamp",
-            "tools_used": ["list of tools"],
-            "model": "model name"
-        }
-    }
-    ```
-    
-    **Example Usage:**
-    ```bash
-    curl -X POST "https://ptr-langgraph-watsonx-api.onrender.com/watsonx/tool" \\
-         -H "Content-Type: application/json" \\
-         -d '{"input": "What is the weather in San Francisco?"}'
-    ```
-    """
-    try:
-        from langchain_core.messages import HumanMessage
-        
-        # Create context
-        context = Context(
-            model="anthropic/claude-sonnet-4-20250514",
-            max_search_results=10
-        )
-        
-        # Prepare input state
-        input_state = {
-            "messages": [HumanMessage(content=request.input)]
-        }
-        
-        # Invoke the graph with context parameter
-        result = await graph.ainvoke(input_state, context=context)
-        
-        # Extract the final response
-        final_messages = result.get("messages", [])
-        if not final_messages:
-            return WatsonXToolResponse(
-                output="I apologize, but I encountered an issue processing your request.",
-                success=False,
-                metadata={"error": "No response from agent"}
-            )
-        
-        # Get the last assistant message
-        last_message = final_messages[-1]
-        response_content = ""
-        
-        if hasattr(last_message, 'content'):
-            response_content = last_message.content
-        elif isinstance(last_message, dict):
-            response_content = last_message.get('content', '')
-        
-        # Detect which tools were used
-        tools_used = []
-        for msg in final_messages:
-            if hasattr(msg, 'additional_kwargs') and 'tool_calls' in msg.additional_kwargs:
-                for tool_call in msg.additional_kwargs['tool_calls']:
-                    tool_name = tool_call.get('function', {}).get('name', 'unknown')
-                    if tool_name not in tools_used:
-                        tools_used.append(tool_name)
-        
-        return WatsonXToolResponse(
-            output=response_content,
-            success=True,
-            metadata={
-                "timestamp": datetime.utcnow().isoformat(),
-                "tools_used": tools_used if tools_used else ["direct_response"],
-                "model": "claude-sonnet-4-20250514",
-                "message_count": len(final_messages)
-            }
-        )
-        
-    except Exception as e:
-        import traceback
-        error_detail = f"Error: {str(e)}"
-        print(f"watsonx tool error: {error_detail}\n{traceback.format_exc()}")
-        
-        return WatsonXToolResponse(
-            output=f"I apologize, but I encountered an error processing your request: {str(e)}",
-            success=False,
-            metadata={"error": error_detail, "timestamp": datetime.utcnow().isoformat()}
         )
 
 
