@@ -2,11 +2,14 @@
 
 This module provides REST API endpoints to interact with the agent,
 including a chat completion endpoint compatible with watsonx Orchestrate.
+Includes watsonx.governance monitoring for runtime evaluation.
 """
 
 import uuid
+import os
 from datetime import datetime
 from typing import List, Optional
+import json
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +22,67 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from react_agent.context import Context
 from react_agent.graph import graph
+
+# watsonx.governance monitoring (optional - only if credentials provided)
+WATSONX_MONITORING_ENABLED = False
+try:
+    import requests
+    WATSONX_API_KEY = os.getenv("WATSONX_API_KEY")
+    WATSONX_SPACE_ID = os.getenv("WATSONX_SPACE_ID", "10bd47d7-d7d3-4b9d-baf4-909ea08875f4")
+    WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+    
+    if WATSONX_API_KEY:
+        WATSONX_MONITORING_ENABLED = True
+        print(f"✓ watsonx.governance monitoring ENABLED (Space: {WATSONX_SPACE_ID})")
+    else:
+        print("ℹ watsonx.governance monitoring DISABLED (no API key)")
+except ImportError:
+    print("ℹ watsonx.governance monitoring DISABLED (requests not installed)")
+
+
+def log_to_watsonx(prompt: str, response: str, metadata: dict):
+    """Log transaction to watsonx.governance for monitoring."""
+    if not WATSONX_MONITORING_ENABLED:
+        return
+    
+    try:
+        # Create payload logging record
+        payload = {
+            "input_data": [{
+                "fields": ["input"],
+                "values": [[prompt]]
+            }],
+            "output_data": [{
+                "fields": ["output"],
+                "values": [[response]]
+            }],
+            "metadata": {
+                "transaction_id": str(uuid.uuid4()),
+                "timestamp": datetime.utcnow().isoformat(),
+                "model_name": "ptr-langgraph-agent",
+                "deployment_id": "ptr-langgraph-production",
+                **metadata
+            }
+        }
+        
+        # Send to watsonx monitoring endpoint
+        headers = {
+            "Authorization": f"Bearer {WATSONX_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{WATSONX_URL}/ml/v4/deployment_jobs/payload_logging"
+        params = {"space_id": WATSONX_SPACE_ID}
+        
+        response_obj = requests.post(url, headers=headers, params=params, json=payload, timeout=5)
+        
+        if response_obj.status_code == 201:
+            print(f"✓ Logged to watsonx: {metadata.get('transaction_id', 'unknown')}")
+        else:
+            print(f"⚠ watsonx logging failed: {response_obj.status_code}")
+            
+    except Exception as e:
+        print(f"⚠ watsonx logging error: {str(e)}")
 
 
 # Pydantic models for API requests and responses
@@ -293,7 +357,132 @@ class WatsonXToolResponse(BaseModel):
           summary="watsonx Tool Endpoint",
           description="Endpoint designed for IBM watsonx Orchestrate tool integration. Accepts a user query and returns an AI-generated response using web search capabilities.")
 async def watsonx_tool(request: WatsonXToolRequest):
-    """watsonx Orchestrate compatible tool endpoint.
+    """watsonx Orchestrate compatible tool endpoint with governance monitoring.
+    
+    This endpoint is specifically designed for integration with IBM watsonx Orchestrate.
+    It accepts a simple text input and returns a formatted response.
+    
+    **Input JSON Schema:**
+    ```json
+    {
+        "input": "Your question here"
+    }
+    ```
+    
+    **Output JSON Schema:**
+    ```json
+    {
+        "output": "AI response here",
+        "success": true,
+        "metadata": {
+            "timestamp": "ISO timestamp",
+            "tools_used": ["list of tools"],
+            "model": "model name"
+        }
+    }
+    ```
+    
+    **Example Usage:**
+    ```bash
+    curl -X POST "https://ptr-langgraph-watsonx-api.onrender.com/watsonx/tool" \\
+         -H "Content-Type: application/json" \\
+         -d '{"input": "What is the weather in San Francisco?"}'
+    ```
+    """
+    transaction_id = str(uuid.uuid4())
+    start_time = datetime.utcnow()
+    
+    try:
+        from langchain_core.messages import HumanMessage
+        
+        # Create context
+        context = Context(
+            model="anthropic/claude-sonnet-4-20250514",
+            max_search_results=10
+        )
+        
+        # Prepare input state
+        input_state = {
+            "messages": [HumanMessage(content=request.input)]
+        }
+        
+        # Invoke the graph with context parameter
+        result = await graph.ainvoke(input_state, context=context)
+        
+        # Extract the final response
+        final_messages = result.get("messages", [])
+        if not final_messages:
+            return WatsonXToolResponse(
+                output="I apologize, but I encountered an issue processing your request.",
+                success=False,
+                metadata={"error": "No response from agent", "transaction_id": transaction_id}
+            )
+        
+        # Get the last assistant message
+        last_message = final_messages[-1]
+        response_content = ""
+        
+        if hasattr(last_message, 'content'):
+            response_content = last_message.content
+        elif isinstance(last_message, dict):
+            response_content = last_message.get('content', '')
+        
+        # Detect which tools were used
+        tools_used = []
+        for msg in final_messages:
+            if hasattr(msg, 'additional_kwargs') and 'tool_calls' in msg.additional_kwargs:
+                for tool_call in msg.additional_kwargs['tool_calls']:
+                    tool_name = tool_call.get('function', {}).get('name', 'unknown')
+                    if tool_name not in tools_used:
+                        tools_used.append(tool_name)
+        
+        # Calculate duration
+        duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+        
+        metadata = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "tools_used": tools_used if tools_used else ["direct_response"],
+            "model": "claude-sonnet-4-20250514",
+            "message_count": len(final_messages),
+            "transaction_id": transaction_id,
+            "duration_ms": duration_ms
+        }
+        
+        # Log to watsonx.governance for monitoring
+        log_to_watsonx(
+            prompt=request.input,
+            response=response_content,
+            metadata=metadata
+        )
+        
+        return WatsonXToolResponse(
+            output=response_content,
+            success=True,
+            metadata=metadata
+        )
+        
+    except Exception as e:
+        import traceback
+        error_detail = f"Error: {str(e)}"
+        print(f"watsonx tool error: {error_detail}\n{traceback.format_exc()}")
+        
+        # Log error to watsonx
+        log_to_watsonx(
+            prompt=request.input,
+            response=f"Error: {str(e)}",
+            metadata={
+                "error": error_detail,
+                "transaction_id": transaction_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "success": False
+            }
+        )
+        
+        return WatsonXToolResponse(
+            output=f"I apologize, but I encountered an error processing your request: {str(e)}",
+            success=False,
+            metadata={"error": error_detail, "timestamp": datetime.utcnow().isoformat(), "transaction_id": transaction_id}
+        )
     
     This endpoint is specifically designed for integration with IBM watsonx Orchestrate.
     It accepts a simple text input and returns a formatted response.
