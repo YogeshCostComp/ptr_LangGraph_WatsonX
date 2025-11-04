@@ -32,11 +32,11 @@ class MetricsStore:
     def __init__(self, max_size=1000):
         self.metrics = deque(maxlen=max_size)
         self.summary_stats = {
-            "total_requests": 0,
+            "total_metrics": 0,
             "avg_response_time": 0,
-            "avg_faithfulness": 0,
-            "avg_relevance": 0,
-            "hallucination_rate": 0
+            "avg_faithfulness_score": 0.0,
+            "avg_relevance_score": 0.0,
+            "hallucination_count": 0
         }
     
     def add_metric(self, metric: Dict[str, Any]):
@@ -47,20 +47,20 @@ class MetricsStore:
         if not self.metrics:
             return
         
-        self.summary_stats["total_requests"] = len(self.metrics)
+        self.summary_stats["total_metrics"] = len(self.metrics)
         self.summary_stats["avg_response_time"] = sum(m.get("response_time", 0) for m in self.metrics) / len(self.metrics)
         
         faithfulness_scores = [m.get("faithfulness_score", 0) for m in self.metrics if m.get("faithfulness_score") is not None]
         if faithfulness_scores:
-            self.summary_stats["avg_faithfulness"] = sum(faithfulness_scores) / len(faithfulness_scores)
+            self.summary_stats["avg_faithfulness_score"] = sum(faithfulness_scores) / len(faithfulness_scores)
         
         relevance_scores = [m.get("relevance_score", 0) for m in self.metrics if m.get("relevance_score") is not None]
         if relevance_scores:
-            self.summary_stats["avg_relevance"] = sum(relevance_scores) / len(relevance_scores)
+            self.summary_stats["avg_relevance_score"] = sum(relevance_scores) / len(relevance_scores)
         
         hallucinations = [m.get("has_hallucination", False) for m in self.metrics]
         if hallucinations:
-            self.summary_stats["hallucination_rate"] = sum(hallucinations) / len(hallucinations)
+            self.summary_stats["hallucination_count"] = sum(hallucinations)
     
     def get_recent_metrics(self, limit=50):
         return list(self.metrics)[-limit:]
