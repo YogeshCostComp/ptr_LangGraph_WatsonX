@@ -129,7 +129,8 @@ async def calculate_advanced_metrics(prompt: str, response: str, context: List[s
         else:
             metrics["has_hallucination"] = False
             metrics["hallucination_score"] = 0.0
-            
+        
+        metrics["sdk_available"] = True
         print(f"✓ IBM watsonx.governance metrics calculated successfully")
         
     except ImportError as ie:
