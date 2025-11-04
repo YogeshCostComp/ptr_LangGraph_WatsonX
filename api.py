@@ -75,7 +75,7 @@ async def calculate_advanced_metrics(prompt: str, response: str, context: List[s
     
     # IBM watsonx credentials
     WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID", "5a662494-a2e0-4baa-9a6c-f386a068f8ff")
-    WATSONX_API_KEY = os.getenv("WATSONX_API_KEY", "9k3diaXQ3ziBcuUXmWUjd1tgzobs6ISYYt24qk1aTzHN")
+    WATSONX_API_KEY = os.getenv("WATSONX_API_KEY", "DYWJp_9ef_aFixJOgEsByq9nZxjwk4RGJgUt__x8-5Js")
     WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
     
     metrics = {
@@ -133,26 +133,37 @@ async def calculate_advanced_metrics(prompt: str, response: str, context: List[s
         print(f"✓ IBM watsonx.governance metrics calculated successfully")
         
     except ImportError as ie:
-        print(f"⚠ IBM watsonx.governance SDK not available: {str(ie)}")
+        error_msg = f"IBM watsonx.governance SDK not available: {str(ie)}"
+        print(f"⚠ {error_msg}")
         print(f"  Using simulated metrics (install ibm-watsonx-gov for real metrics)")
+        import traceback
+        full_traceback = traceback.format_exc()
+        print(full_traceback)
         # Fallback to simulated metrics
         metrics["faithfulness_score"] = 0.85 + (len(response) % 15) / 100
         metrics["relevance_score"] = 0.88 + (len(prompt) % 12) / 100
         metrics["has_hallucination"] = False
         metrics["hallucination_score"] = 0.05
         metrics["sdk_available"] = False
+        metrics["error_type"] = "ImportError"
+        metrics["error_message"] = error_msg
+        metrics["error_traceback"] = full_traceback
         
     except Exception as e:
-        print(f"✗ Error calculating metrics with SDK: {str(e)}")
+        error_msg = f"Error calculating metrics with SDK: {str(e)}"
+        print(f"✗ {error_msg}")
         import traceback
-        traceback.print_exc()
+        full_traceback = traceback.format_exc()
+        print(full_traceback)
         # Fallback to simulated metrics
         metrics["faithfulness_score"] = 0.82 + (len(response) % 18) / 100
         metrics["relevance_score"] = 0.86 + (len(prompt) % 14) / 100
         metrics["has_hallucination"] = False
         metrics["hallucination_score"] = 0.03
-        metrics["error"] = str(e)
         metrics["sdk_available"] = False
+        metrics["error_type"] = type(e).__name__
+        metrics["error_message"] = str(e)
+        metrics["error_traceback"] = full_traceback
     
     return metrics
 
