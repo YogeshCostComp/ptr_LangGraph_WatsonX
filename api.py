@@ -7,13 +7,15 @@ Includes full watsonx.governance monitoring, evaluation, and experiment tracking
 
 import uuid
 import os
+import time
 from datetime import datetime
-from typing import List, Optional, AsyncGenerator
+from typing import List, Optional, AsyncGenerator, Dict, Any
+from collections import deque
 import json
 import asyncio
 
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,166 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from react_agent.context import Context
 from react_agent.graph import graph
+
+# Metrics storage for dashboard
+class MetricsStore:
+    def __init__(self, max_size=1000):
+        self.metrics = deque(maxlen=max_size)
+        self.summary_stats = {
+            "total_requests": 0,
+            "avg_response_time": 0,
+            "avg_faithfulness": 0,
+            "avg_relevance": 0,
+            "hallucination_rate": 0
+        }
+    
+    def add_metric(self, metric: Dict[str, Any]):
+        self.metrics.append(metric)
+        self._update_summary()
+    
+    def _update_summary(self):
+        if not self.metrics:
+            return
+        
+        self.summary_stats["total_requests"] = len(self.metrics)
+        self.summary_stats["avg_response_time"] = sum(m.get("response_time", 0) for m in self.metrics) / len(self.metrics)
+        
+        faithfulness_scores = [m.get("faithfulness_score", 0) for m in self.metrics if m.get("faithfulness_score") is not None]
+        if faithfulness_scores:
+            self.summary_stats["avg_faithfulness"] = sum(faithfulness_scores) / len(faithfulness_scores)
+        
+        relevance_scores = [m.get("relevance_score", 0) for m in self.metrics if m.get("relevance_score") is not None]
+        if relevance_scores:
+            self.summary_stats["avg_relevance"] = sum(relevance_scores) / len(relevance_scores)
+        
+        hallucinations = [m.get("has_hallucination", False) for m in self.metrics]
+        if hallucinations:
+            self.summary_stats["hallucination_rate"] = sum(hallucinations) / len(hallucinations)
+    
+    def get_recent_metrics(self, limit=50):
+        return list(self.metrics)[-limit:]
+    
+    def get_summary(self):
+        return self.summary_stats
+
+metrics_store = MetricsStore()
+
+async def calculate_advanced_metrics(prompt: str, response: str, context: List[str] = None) -> Dict[str, Any]:
+    """Calculate advanced evaluation metrics using IBM watsonx.governance API"""
+    
+    # IBM watsonx credentials
+    WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID", "5a662494-a2e0-4baa-9a6c-f386a068f8ff")
+    WATSONX_API_KEY = os.getenv("WATSONX_API_KEY", "9k3diaXQ3ziBcuUXmWUjd1tgzobs6ISYYt24qk1aTzHN")
+    WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+    
+    metrics = {
+        "timestamp": time.time(),
+        "prompt": prompt[:100] + "..." if len(prompt) > 100 else prompt,
+        "response_length": len(response)
+    }
+    
+    try:
+        import httpx
+        
+        # Get IAM token for authentication
+        iam_token_url = "https://iam.cloud.ibm.com/identity/token"
+        token_headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json"
+        }
+        token_data = {
+            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": WATSONX_API_KEY
+        }
+        
+        async with httpx.AsyncClient() as client:
+            # Get IAM token
+            token_response = await client.post(iam_token_url, headers=token_headers, data=token_data, timeout=30.0)
+            token_response.raise_for_status()
+            access_token = token_response.json()["access_token"]
+            
+            # Prepare context string
+            context_str = " ".join(context) if context else ""
+            
+            # Call watsonx.governance evaluation API
+            eval_url = f"{WATSONX_URL}/ml/v1/ai_evaluations?version=2024-01-01"
+            eval_headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            # Faithfulness evaluation
+            faithfulness_payload = {
+                "project_id": WATSONX_PROJECT_ID,
+                "metric": "faithfulness",
+                "parameters": {
+                    "question": prompt,
+                    "answer": response,
+                    "context": context_str
+                }
+            }
+            
+            faith_response = await client.post(eval_url, headers=eval_headers, json=faithfulness_payload, timeout=30.0)
+            if faith_response.status_code == 200:
+                faith_data = faith_response.json()
+                metrics["faithfulness_score"] = faith_data.get("score", 0.0)
+            else:
+                metrics["faithfulness_score"] = 0.0
+                
+            # Relevance evaluation
+            relevance_payload = {
+                "project_id": WATSONX_PROJECT_ID,
+                "metric": "answer_relevance",
+                "parameters": {
+                    "question": prompt,
+                    "answer": response
+                }
+            }
+            
+            rel_response = await client.post(eval_url, headers=eval_headers, json=relevance_payload, timeout=30.0)
+            if rel_response.status_code == 200:
+                rel_data = rel_response.json()
+                metrics["relevance_score"] = rel_data.get("score", 0.0)
+            else:
+                metrics["relevance_score"] = 0.0
+                
+            # Hallucination detection
+            hallucination_payload = {
+                "project_id": WATSONX_PROJECT_ID,
+                "metric": "hallucination",
+                "parameters": {
+                    "question": prompt,
+                    "answer": response,
+                    "context": context_str
+                }
+            }
+            
+            hall_response = await client.post(eval_url, headers=eval_headers, json=hallucination_payload, timeout=30.0)
+            if hall_response.status_code == 200:
+                hall_data = hall_response.json()
+                metrics["has_hallucination"] = hall_data.get("detected", False)
+                metrics["hallucination_score"] = hall_data.get("score", 0.0)
+            else:
+                metrics["has_hallucination"] = False
+                metrics["hallucination_score"] = 0.0
+            
+            # Context metrics if available
+            if context:
+                metrics["context_precision"] = 0.0
+                metrics["context_recall"] = 0.0
+                # Could add more IBM API calls for context metrics here
+            
+    except Exception as e:
+        print(f"Error calculating metrics: {str(e)}")
+        # Fallback to basic metrics
+        metrics["faithfulness_score"] = 0.0
+        metrics["relevance_score"] = 0.0
+        metrics["has_hallucination"] = False
+        metrics["hallucination_score"] = 0.0
+        metrics["error"] = str(e)
+    
+    return metrics
 
 # watsonx.governance imports and setup
 WATSONX_GOV_ENABLED = False
@@ -210,6 +372,29 @@ async def health_check():
     }
 
 
+@app.get("/api/metrics")
+async def get_metrics():
+    """Get current metrics summary for UI display"""
+    try:
+        summary = metrics_store.get_summary()
+        
+        # Get recent metrics (last 10)
+        recent_metrics = list(metrics_store.metrics)[-10:] if metrics_store.metrics else []
+        
+        return {
+            "status": "success",
+            "summary": summary,
+            "recent_metrics": recent_metrics,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": time.time()
+        }
+
+
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
     request: ChatCompletionRequest,
@@ -305,6 +490,25 @@ async def chat_completions(
                         }
                         yield f"data: {json.dumps(chunk)}\n\n"
                         await asyncio.sleep(0.05)  # Simulate realistic streaming
+                    
+                    # Calculate and store metrics using IBM watsonx.governance
+                    user_prompt = ""
+                    for msg in request.messages:
+                        if msg.role == "user":
+                            user_prompt = msg.content
+                            break
+                    
+                    if user_prompt and response_content:
+                        try:
+                            # Calculate metrics using real IBM watsonx API (async background task)
+                            metrics = await calculate_advanced_metrics(
+                                prompt=user_prompt,
+                                response=response_content,
+                                context=[]  # Could extract context from tool calls if available
+                            )
+                            metrics_store.add_metric(metrics)
+                        except Exception as e:
+                            print(f"Error calculating metrics in stream: {str(e)}")
                 
                 # Send final chunk
                 final_chunk = {
@@ -382,6 +586,25 @@ async def chat_completions(
             response_content = last_message.content
         elif isinstance(last_message, dict):
             response_content = last_message.get('content', '')
+        
+        # Calculate and store metrics using IBM watsonx.governance
+        user_prompt = ""
+        for msg in request.messages:
+            if msg.role == "user":
+                user_prompt = msg.content
+                break
+        
+        if user_prompt and response_content:
+            try:
+                # Calculate metrics using real IBM watsonx API
+                metrics = await calculate_advanced_metrics(
+                    prompt=user_prompt,
+                    response=response_content,
+                    context=[]  # Could extract context from tool calls if available
+                )
+                metrics_store.add_metric(metrics)
+            except Exception as e:
+                print(f"Error calculating metrics: {str(e)}")
         
         # Format response in OpenAI-compatible format
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"

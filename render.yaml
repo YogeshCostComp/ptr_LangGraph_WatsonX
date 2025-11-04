@@ -11,7 +11,9 @@ services:
       - key: TAVILY_API_KEY
         sync: false
       - key: WATSONX_API_KEY
-        sync: false
+        value: 9k3diaXQ3ziBcuUXmWUjd1tgzobs6ISYYt24qk1aTzHN
+      - key: WATSONX_PROJECT_ID
+        value: 5a662494-a2e0-4baa-9a6c-f386a068f8ff
       - key: WATSONX_SPACE_ID
         value: cce0d392-58a9-c931-9027-ca2afe9a2317
       - key: WATSONX_URL

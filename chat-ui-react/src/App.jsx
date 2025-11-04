@@ -10,6 +10,7 @@ function App() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
+  const [metrics, setMetrics] = useState(null)
   const messagesEndRef = useRef(null)
 
   const scrollToBottom = () => {
@@ -26,12 +27,31 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
+  useEffect(() => {
+    // Fetch metrics on mount and set up polling
+    fetchMetrics()
+    const metricsInterval = setInterval(fetchMetrics, 5000) // Update every 5 seconds
+    return () => clearInterval(metricsInterval)
+  }, [])
+
   const checkConnection = async () => {
     try {
       const response = await fetch(`${API_URL}/health`)
       setIsConnected(response.ok)
     } catch (error) {
       setIsConnected(false)
+    }
+  }
+
+  const fetchMetrics = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/metrics`)
+      if (response.ok) {
+        const data = await response.json()
+        setMetrics(data)
+      }
+    } catch (error) {
+      console.error('Error fetching metrics:', error)
     }
   }
 
@@ -72,6 +92,9 @@ function App() {
       }
 
       setMessages(prev => [...prev, assistantMessage])
+      
+      // Fetch updated metrics after response
+      fetchMetrics()
     } catch (error) {
       console.error('Error:', error)
       setMessages(prev => [...prev, {
@@ -84,54 +107,142 @@ function App() {
   }
 
   return (
-    <div className="chat-container">
-      <div className="chat-header">
-        <div>
-          🤖 LangGraph ReAct Agent
-          <span className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
-            ● {isConnected ? 'Connected' : 'Disconnected'}
-          </span>
+    <div className="app-layout">
+      {/* Chat Panel */}
+      <div className="chat-container">
+        <div className="chat-header">
+          <div>
+            🤖 LangGraph ReAct Agent
+            <span className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+              ● {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
+          </div>
+          <small>Powered by Claude & Tavily Search</small>
         </div>
-        <small>Powered by Claude & Tavily Search</small>
+
+        <div className="chat-messages">
+          {messages.map((message, index) => (
+            <div key={index} className={`message ${message.role}`}>
+              <div className="message-content">
+                {message.content}
+              </div>
+            </div>
+          ))}
+          {isLoading && (
+            <div className="message assistant">
+              <div className="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form className="chat-input-container" onSubmit={sendMessage}>
+          <input
+            type="text"
+            className="chat-input"
+            placeholder="Type your message here..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={isLoading}
+          />
+          <button 
+            type="submit" 
+            className="send-button"
+            disabled={isLoading || !input.trim()}
+          >
+            {isLoading ? 'Sending...' : 'Send'}
+          </button>
+        </form>
       </div>
 
-      <div className="chat-messages">
-        {messages.map((message, index) => (
-          <div key={index} className={`message ${message.role}`}>
-            <div className="message-content">
-              {message.content}
+      {/* Metrics Panel */}
+      <div className="metrics-panel">
+        <div className="metrics-header">
+          📊 IBM watsonx.governance Metrics
+        </div>
+        
+        {metrics && metrics.status === 'success' ? (
+          <div className="metrics-content">
+            {/* Summary Statistics */}
+            <div className="metrics-section">
+              <h3>Summary Statistics</h3>
+              <div className="metrics-grid">
+                <div className="metric-card">
+                  <div className="metric-label">Total Evaluations</div>
+                  <div className="metric-value">{metrics.summary.total_metrics || 0}</div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-label">Avg Faithfulness</div>
+                  <div className="metric-value">
+                    {metrics.summary.avg_faithfulness_score 
+                      ? (metrics.summary.avg_faithfulness_score * 100).toFixed(1) + '%' 
+                      : 'N/A'}
+                  </div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-label">Avg Relevance</div>
+                  <div className="metric-value">
+                    {metrics.summary.avg_relevance_score 
+                      ? (metrics.summary.avg_relevance_score * 100).toFixed(1) + '%' 
+                      : 'N/A'}
+                  </div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-label">Hallucinations</div>
+                  <div className="metric-value hallucination">
+                    {metrics.summary.hallucination_count || 0}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Recent Metrics */}
+            <div className="metrics-section">
+              <h3>Recent Evaluations</h3>
+              <div className="metrics-list">
+                {metrics.recent_metrics && metrics.recent_metrics.length > 0 ? (
+                  metrics.recent_metrics.slice().reverse().map((metric, index) => (
+                    <div key={index} className="metric-item">
+                      <div className="metric-item-header">
+                        <span className="metric-timestamp">
+                          {new Date(metric.timestamp * 1000).toLocaleTimeString()}
+                        </span>
+                        {metric.has_hallucination && (
+                          <span className="hallucination-badge">⚠️ Hallucination</span>
+                        )}
+                      </div>
+                      <div className="metric-item-body">
+                        <div className="metric-prompt">
+                          <strong>Prompt:</strong> {metric.prompt}
+                        </div>
+                        <div className="metric-scores">
+                          <span className="score-badge faithfulness">
+                            Faithfulness: {(metric.faithfulness_score * 100).toFixed(0)}%
+                          </span>
+                          <span className="score-badge relevance">
+                            Relevance: {(metric.relevance_score * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="no-metrics">No evaluations yet. Start chatting to see metrics!</div>
+                )}
+              </div>
             </div>
           </div>
-        ))}
-        {isLoading && (
-          <div className="message assistant">
-            <div className="typing-indicator">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
+        ) : (
+          <div className="metrics-loading">
+            <div className="loading-spinner"></div>
+            <p>Loading metrics from IBM watsonx.governance...</p>
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
-
-      <form className="chat-input-container" onSubmit={sendMessage}>
-        <input
-          type="text"
-          className="chat-input"
-          placeholder="Type your message here..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={isLoading}
-        />
-        <button 
-          type="submit" 
-          className="send-button"
-          disabled={isLoading || !input.trim()}
-        >
-          {isLoading ? 'Sending...' : 'Send'}
-        </button>
-      </form>
     </div>
   )
 }
