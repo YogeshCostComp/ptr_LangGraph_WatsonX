@@ -14,4 +14,4 @@ jupyter-core>=5.0.0
 jsonpath-ng>=1.5.0
 opentelemetry-api>=1.20.0
 opentelemetry-sdk>=1.20.0
-ibm-watsonx-gov[metrics]>=1.3.0
+ibm-watsonx-gov[agentic,visualization]>=1.3.0
