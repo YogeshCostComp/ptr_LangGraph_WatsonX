@@ -171,6 +171,8 @@ async def calculate_advanced_metrics(prompt: str, response: str, context: List[s
 # watsonx.governance imports and setup
 WATSONX_GOV_ENABLED = False
 try:
+    # Import with better error handling
+    import sys
     from ibm_watsonx_gov.config import AgenticAIConfiguration
     from ibm_watsonx_gov.config.agentic_ai_configuration import TracingConfiguration
     from ibm_watsonx_gov.evaluators.agentic_evaluator import AgenticEvaluator
@@ -215,6 +217,10 @@ try:
 
 except ImportError as e:
     print(f"ℹ watsonx.governance SDK not available: {e}")
+    evaluator = None
+    WATSONX_GOV_ENABLED = False
+except Exception as e:
+    print(f"ℹ watsonx.governance SDK failed to initialize: {e}")
     evaluator = None
     WATSONX_GOV_ENABLED = False
 
