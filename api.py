@@ -185,6 +185,9 @@ try:
     WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID")
     WATSONX_APIKEY = os.getenv("WATSONX_APIKEY", os.getenv("WATSONX_API_KEY"))
     WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+    
+    print(f"Debug: WATSONX_PROJECT_ID = {WATSONX_PROJECT_ID}")
+    print(f"Debug: WATSONX_APIKEY = {'***' + WATSONX_APIKEY[-8:] if WATSONX_APIKEY else None}")
 
     if WATSONX_PROJECT_ID and WATSONX_APIKEY:
         WATSONX_GOV_ENABLED = True
